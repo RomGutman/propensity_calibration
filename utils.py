@@ -11,6 +11,10 @@ from tqdm import tqdm
 from sklearn.calibration import _sigmoid_calibration, calibration_curve
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.colors import TwoSlopeNorm
+from sklearn.isotonic import IsotonicRegression
+from sklearn.base import ClassifierMixin, BaseEstimator
+from causallib.datasets import load_nhefs
 
 
 def get_variables(mean_, std_, n_, m_=1, noise_mean_=1, noise_std_=0):
@@ -109,6 +113,10 @@ def generate_calib_error_df(t, prop, idx=0, type_=None, scale=None, calibration_
     return calib_res_df
 
 
+def isscaled(label, label_prefix='scaled'):
+    return label_prefix == label.split('_')[0]
+
+
 def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, num_of_experiments=1,
                         phi_func=expit_transform, experiments=None, post_colab_func=None, save=False):
     """
@@ -153,12 +161,16 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
         else:
             save = False
         for expr, prop_func in experiments.items():
+            flag = isscaled(expr)
             if callable(prop_func):
                 prop_hat = prop_func(prop)
+            elif isinstance(prop_func, ClassifierMixin) or isinstance(prop_func, BaseEstimator):
+                prop_hat = fit_classifier(rel_vars, t, prop_func)
             else:
+                warnings.warn(f'for experiment {expr}, predicting identity')
                 prop_hat = prop
             ate_hat = calc_ipw(y, t, prop_hat)
-            scale = get_sacle_from_name(expr)
+            scale = get_sacle_from_name(expr) if flag else f'{expr}_model'
             if save:
                 saved_dict['models'][scale] = {'deformed': prop_hat}
             err_df_list.append(
@@ -226,8 +238,23 @@ def sigmoid_calib(pred, t):
     return expit(-(a * pred + b))
 
 
+def isotonic_reg(pred, t):
+    """ re-calibration of prediction using isotonic regression
+
+    Args:
+        pred:
+        t:
+
+    Returns:
+
+    """
+    iso_reg = IsotonicRegression(increasing='auto')
+    pred_hat = iso_reg.fit_transform(pred,t)
+    return pred_hat
+
+
 def plot_calibration(df, calib_metric, calib_metric_label, error='ATE_error', error_label='ATE Error',
-                     upper_y_bound=3.5, upper_x_bound=0.3, cm=None):
+                     upper_y_bound=3.5, upper_x_bound=0.3, lower_x_bound=0., cm=None):
     """
 
     Args:
@@ -247,19 +274,35 @@ def plot_calibration(df, calib_metric, calib_metric_label, error='ATE_error', er
     if cm is not None:
         hue_s = df.sort_values('scale').groupby('type')['scale'].max().sort_values().apply(np.log).map(cm)
         hue_order = hue_s.index.tolist()
-        palette = sns.color_palette(hue_s.values.tolist(), hue_s.shape[0])
+        hue_norm = TwoSlopeNorm(1, df['scale'].min(), df['scale'].max())
+        palette = cm(hue_norm(df.sort_values('scale')['scale'].unique()))
     else:
         hue_order = None
         palette = None
-    sns.scatterplot(x=calib_metric, y=error, data=df.sort_values('scale'), hue='type',
-                    hue_order=hue_order, palette=palette)
+    ax = sns.scatterplot(x=calib_metric, y=error, data=df.sort_values('scale'), hue='type',
+                         hue_order=hue_order, palette=palette, legend=None, edgecolor='black')
     plt.ylim(-0.01, upper_y_bound)
-    plt.xlim(0, upper_x_bound)
+    plt.xlim(lower_x_bound, upper_x_bound)
     plt.xlabel(calib_metric_label, fontdict={'weight': 'bold', 'size': 17})
     plt.ylabel(error_label, fontdict={'weight': 'bold', 'size': 17})
+    if cm is not None:
+        sm = plt.cm.ScalarMappable(cmap=cm, norm=hue_norm)
+        sm.set_array([])
+
+        # Remove the legend and add a colorbar
+        # ax.get_legend().remove()
+        ax.figure.colorbar(sm)
 
 
 def min_max_transform(arr):
+    """
+
+    Args:
+        arr:
+
+    Returns:
+
+    """
     return (arr - arr.min()) / (arr.max() - arr.min())
 
 
@@ -291,3 +334,56 @@ def plot_calibration_curve(res_dict, scale):
     ax2.set_xlabel("Mean predicted value")
     ax2.set_ylabel("Count")
     ax2.legend(loc="upper left", ncol=2)
+
+
+def fit_classifier(variables, target, clf):
+    """
+
+    Args:
+        clf:
+        variables:
+        target:
+
+    Returns:
+
+    """
+    clf.fit(variables, target)
+    return clf.predict_proba(variables)[:, 1]
+
+
+def get_points(df, calib_metric, y_metric='ATE_error'):
+    if df.shape[0] != 2:
+        print(df)
+        raise ValueError('The df should include two instances - before and after calibration')
+    x_y_orig = df.loc[df['calibration_type'].isna(), [calib_metric, y_metric]]
+    x_y_calib = df.loc[~df['calibration_type'].isna(), [calib_metric, y_metric]]
+    return (x_y_orig[calib_metric].iloc[0],
+            x_y_orig[y_metric].iloc[0],
+            (x_y_calib[calib_metric].iloc[0] - x_y_orig[calib_metric].iloc[0]),
+            (x_y_calib[y_metric].iloc[0] - x_y_orig[y_metric].iloc[0]))
+
+
+def get_arrows(df, calib_metric, y_metric='ATE_error'):
+    """
+
+    Args:
+        df:
+        calib_metric:
+        y_metric:
+
+    Returns:
+
+    """
+
+    gb = df.reset_index().groupby('index')
+
+    arrows = []
+    for g in gb.groups:
+        arrows.append(gb.get_group(g).groupby('scale').apply(get_points, calib_metric, y_metric))
+
+    arrows = pd.concat(arrows)
+    return arrows
+
+
+def plot_arrow(values):
+    plt.arrow(*values, length_includes_head=True, width=1e-20, alpha=0.4, head_width=0.009);
