@@ -1,5 +1,7 @@
+import os.path
 import warnings
 import pickle
+from copy import copy
 
 
 import numpy as np
@@ -12,9 +14,13 @@ from sklearn.calibration import _sigmoid_calibration, calibration_curve
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.colors import TwoSlopeNorm
+from matplotlib.patches import FancyArrowPatch
 from sklearn.isotonic import IsotonicRegression
 from sklearn.base import ClassifierMixin, BaseEstimator
+from sklearn.model_selection import KFold, cross_val_predict, GridSearchCV
+
 from causallib.datasets import load_nhefs
+from causallib.evaluation.weight_evaluator import calculate_covariate_balance
 
 
 def get_variables(mean_, std_, n_, m_=1, noise_mean_=1, noise_std_=0):
@@ -113,12 +119,13 @@ def generate_calib_error_df(t, prop, idx=0, type_=None, scale=None, calibration_
     return calib_res_df
 
 
-def isscaled(label, label_prefix='scaled'):
+def is_scaled(label, label_prefix='scaled'):
     return label_prefix == label.split('_')[0]
 
 
 def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, num_of_experiments=1,
-                        phi_func=expit_transform, experiments=None, post_colab_func=None, save=False):
+                        phi_func=expit_transform, experiments=None, post_colab_func=None, save=False,
+                        nested_cv=False):
     """
 
     Args:
@@ -161,15 +168,20 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
         else:
             save = False
         for expr, prop_func in experiments.items():
-            flag = isscaled(expr)
+            flag = is_scaled(expr)
             if callable(prop_func):
                 prop_hat = prop_func(prop)
+            elif nested_cv and prop_func is not None:
+                prop_func_temp = copy(prop_func)
+                prop_hat = nested_cv_predict(prop_func_temp, rel_vars, t)
             elif isinstance(prop_func, ClassifierMixin) or isinstance(prop_func, BaseEstimator):
-                prop_hat = fit_classifier(rel_vars, t, prop_func)
+                prop_func_temp = copy(prop_func)
+                prop_hat = fit_classifier(rel_vars, t, prop_func_temp)
             else:
                 warnings.warn(f'for experiment {expr}, predicting identity')
                 prop_hat = prop
             ate_hat = calc_ipw(y, t, prop_hat)
+            smd = calc_balancing(pd.DataFrame(rel_vars), pd.Series(t), prop_hat)
             scale = get_sacle_from_name(expr) if flag else f'{expr}_model'
             if save:
                 saved_dict['models'][scale] = {'deformed': prop_hat}
@@ -182,11 +194,13 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
                     scale=scale
                 )
                 .assign(ATE=ate_hat)
+                .assign(Balancing=smd)
             )
             if callable(post_colab_func):
                 new_label = f'{expr}_calibrated'
                 prop_hat = post_colab_func(prop_hat, t)
                 ate_hat = calc_ipw(y, t, prop_hat)
+                smd = calc_balancing(pd.DataFrame(rel_vars), pd.Series(t), prop_hat)
                 err_df_list.append(
                     generate_calib_error_df(
                         t,
@@ -197,11 +211,89 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
                         calibration_type=post_colab_func.__name__
                     )
                     .assign(ATE=ate_hat)
+                    .assign(Balancing=smd)
                 )
                 if save:
                     saved_dict['models'][scale].update({'corrected': prop_hat})
-    if orig_save: # because we make the upper flag to be false
+    if orig_save:   # because we make the upper flag to be false
         with open('models.pkl', 'wb') as f:
+            pickle.dump(saved_dict, f)
+    return pd.concat(err_df_list)
+
+
+def calc_balancing(x, t, e):
+    smd = calculate_covariate_balance(x, t, pd.Series(e), metric="abs_smd")
+    return smd['weighted'].max()
+
+
+def run_synthetic_experiments(var, t, e, potential_outcomes, experiments=None, post_colab_func=None,
+                              save=False, id_=None, save_name=None, nested_cv=False):
+    if experiments is None:
+        warnings.warn("No experiment were given, performing for identity only")
+        experiments = {'Identity': None}
+    x = copy(var)
+    y = np.where(t == 1, potential_outcomes[1], potential_outcomes[0])
+    err_df_list = []
+    saved_dict = {}
+    if id_ is None:
+        warnings.warn("No id was given to this run, defaulting to 0 instead")
+        id_ = 0
+    if save:
+        saved_dict['t'] = t
+        saved_dict['prop'] = e
+        saved_dict['models'] = {}
+    for expr, prop_func in experiments.items():
+        if nested_cv and prop_func is not None:
+            prop_hat = nested_cv_predict(prop_func, x, t)
+        elif isinstance(prop_func, ClassifierMixin) or isinstance(prop_func, BaseEstimator):
+            prop_hat = fit_classifier(x, t, prop_func)
+        else:
+            warnings.warn(f'for experiment {expr}, predicting identity')
+            prop_hat = e
+        smd = calc_balancing(x, t, prop_hat)
+        ate_hat = calc_ipw(y, t, prop_hat)
+        scale = f'{expr}_model'
+        with open(f'{scale}_{id_}.pkl', 'wb') as f:
+            pickle.dump(prop_func, f)
+        if save:
+            saved_dict['models'][scale] = {'uncalibrated': prop_hat}
+        err_df_list.append(
+            generate_calib_error_df(
+                t,
+                prop_hat,
+                id_,
+                type_=expr,
+                scale=scale
+            )
+                .assign(ATE=ate_hat)
+                .assign(Balancing=smd)
+        )
+        if callable(post_colab_func):
+            new_label = f'{expr}_calibrated'
+            prop_hat = post_colab_func(prop_hat, t)
+            smd = calc_balancing(x, t, prop_hat)
+            ate_hat = calc_ipw(y, t, prop_hat)
+            err_df_list.append(
+                generate_calib_error_df(
+                    t,
+                    prop_hat,
+                    id_,
+                    type_=new_label,
+                    scale=scale,
+                    calibration_type=post_colab_func.__name__
+                )
+                    .assign(ATE=ate_hat)
+                    .assign(Balancing=smd)
+            )
+            if save:
+                saved_dict['models'][scale].update({'calibrated': prop_hat})
+    if save:   # because we make the upper flag to be false
+        if save_name is None:
+            save_name = f'model{id_}.pkl'
+        elif os.path.splitext(save_name)[1] != '.pkl':
+            warnings.warn("pickle file should be save with .pkl extension")
+            save_name = f'{save_name}.pkl'
+        with open(save_name, 'wb') as f:
             pickle.dump(saved_dict, f)
     return pd.concat(err_df_list)
 
@@ -272,10 +364,7 @@ def plot_calibration(df, calib_metric, calib_metric_label, error='ATE_error', er
     """
     plt.figure(figsize=(10, 10))
     if cm is not None:
-        hue_s = df.sort_values('scale').groupby('type')['scale'].max().sort_values().apply(np.log).map(cm)
-        hue_order = hue_s.index.tolist()
-        hue_norm = TwoSlopeNorm(1, df['scale'].min(), df['scale'].max())
-        palette = cm(hue_norm(df.sort_values('scale')['scale'].unique()))
+        hue_norm, hue_order, palette = get_palette_for_values(cm, df)
     else:
         hue_order = None
         palette = None
@@ -294,6 +383,14 @@ def plot_calibration(df, calib_metric, calib_metric_label, error='ATE_error', er
         ax.figure.colorbar(sm)
 
 
+def get_palette_for_values(cm, df):
+    hue_s = df.sort_values('scale').groupby('type')['scale'].max().sort_values().apply(np.log).map(cm)
+    hue_order = hue_s.index.tolist()
+    hue_norm = TwoSlopeNorm(1, df['scale'].min(), df['scale'].max())
+    palette = cm(hue_norm(df.sort_values('scale')['scale'].unique()))
+    return hue_norm, hue_order, palette
+
+
 def min_max_transform(arr):
     """
 
@@ -306,15 +403,18 @@ def min_max_transform(arr):
     return (arr - arr.min()) / (arr.max() - arr.min())
 
 
-def plot_calibration_curve(res_dict, scale):
+def plot_calibration_curve(res_dict, scale, hist_ratio=3, ax1=None):
     t = res_dict['t']
     prop = res_dict['prop']
     models = res_dict['models'][scale]
     models.update({'identity': prop})
-    plt.figure(figsize=(10, 10))
-    ax1 = plt.subplot2grid((3, 1), (0, 0), rowspan=2)
-    ax2 = plt.subplot2grid((3, 1), (2, 0))
+    if ax1 is None:
+        ax1 = plt.figure(figsize=(3, 1)).add_subplot(111)
+    # plt.figure(figsize=(10, 10))
+    # ax1 = plt.subplot2grid((3, 1), (0, 0), rowspan=2)
+    # ax2 = plt.subplot2grid((3, 1), (2, 0))
     ax1.plot([0, 1], [0, 1], "k:", label="Perfectly calibrated")
+    ax2 = ax1.twinx()
     for name, model in models.items():
 
         fraction_of_positives, mean_predicted_value = \
@@ -322,18 +422,23 @@ def plot_calibration_curve(res_dict, scale):
 
         ax1.plot(mean_predicted_value, fraction_of_positives, "s-",
                  label=f"{name}")
-
+        # ax2 = ax1.twinx()
         ax2.hist(model, range=(0, 1), bins=100, label=name,
                  histtype="bar", lw=2, alpha=0.5)
 
-    ax1.set_ylabel("Fraction of positives")
+    ax1.set_ylabel("Fraction of positives", fontdict={'weight': 'bold', 'size': 16})
     ax1.set_ylim([-0.05, 1.05])
-    ax1.legend(loc="lower right")
-    ax1.set_title(f'Calibration plots  (reliability curve) for scale: {scale}')
+    ax1.legend(loc="upper left", prop={'weight': 'bold', 'size': 16})
+    ax1.set_title(f'Calibration plots  (reliability curve) for scale: {scale}',  fontdict={'weight': 'bold', 'size': 16})
 
-    ax2.set_xlabel("Mean predicted value")
-    ax2.set_ylabel("Count")
-    ax2.legend(loc="upper left", ncol=2)
+    top_val = ax2.get_ybound()[1]
+    ax2.set_ylim([0, top_val * hist_ratio])
+    # print(top_val)
+    ax2.set(yticklabels=[])
+    ax2.tick_params(right=False)
+    # ax2.set_ylabel("Count")
+    # ax2.legend(loc="upper left", ncol=2)
+    return ax2
 
 
 def fit_classifier(variables, target, clf):
@@ -385,5 +490,28 @@ def get_arrows(df, calib_metric, y_metric='ATE_error'):
     return arrows
 
 
-def plot_arrow(values):
-    plt.arrow(*values, length_includes_head=True, width=1e-20, alpha=0.4, head_width=0.009);
+# todo: fix arrow work
+def plot_arrow(values, ax):
+    # print(values[:2], tuple(np.array(values[2:]) + np.array(values[:2])))
+    tail = values[:2]
+    head = tuple(np.array(values[2:]) + np.array(values[:2]))
+    # plt.arrow(*values, length_includes_head=True, width=1e-20, alpha=0.4, head_width=0.009);
+    arrow = FancyArrowPatch(tail, head, lw=1, alpha=0.4, linestyle='solid',
+                            arrowstyle='simple,tail_width=0.01', shrinkB=3, mutation_scale=15)
+    ax.add_patch(arrow)
+
+
+def plot_overlap(t, prop):
+    fig = plt.figure(figsize=(10, 10))
+    plt.hist(prop[t == 1], bins=20, color='cornflowerblue', alpha=0.7, label='Treated');
+    plt.hist(prop[t == 0], bins=20, color='red', alpha=0.7, label='Control');
+
+    plt.legend();
+
+
+def nested_cv_predict(model, variables, target, n_splits=10):
+
+    cv_outer = KFold(n_splits=n_splits, shuffle=True, random_state=0)
+    final_score = cross_val_predict(model, variables, target, cv=cv_outer, n_jobs=-1, method='predict_proba')
+
+    return final_score[:, 1]
