@@ -1,0 +1,11 @@
+# python=3.8
+numpy
+scipy
+pandas
+scikit-learn
+statsmodels
+matplotlib
+seaborn
+tqdm
+causallib
+jupyterlab
