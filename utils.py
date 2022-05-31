@@ -13,8 +13,9 @@ from tqdm import tqdm
 from sklearn.calibration import _sigmoid_calibration, calibration_curve
 import matplotlib.pyplot as plt
 import seaborn as sns
-from matplotlib.colors import TwoSlopeNorm
-from matplotlib.patches import FancyArrowPatch
+from matplotlib.colors import TwoSlopeNorm, ListedColormap
+from matplotlib.patches import FancyArrowPatch, Patch
+from matplotlib.lines import Line2D
 from sklearn.isotonic import IsotonicRegression
 from sklearn.base import ClassifierMixin, BaseEstimator
 from sklearn.model_selection import KFold, cross_val_predict, GridSearchCV
@@ -125,7 +126,7 @@ def is_scaled(label, label_prefix='scaled'):
 
 def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, num_of_experiments=1,
                         phi_func=expit_transform, experiments=None, post_colab_func=None, save=False,
-                        nested_cv=False):
+                        nested_cv=False, save_dir='.'):
     """
 
     Args:
@@ -146,6 +147,9 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
     Returns:
 
     """
+    if save:
+        assert os.path.exists(save_dir), f"The directory {save_dir} doesn't exists."
+        print(f"Saving to {save_dir}")
     variables, noise = get_variables(mean_=mean, std_=std, n_=n * num_of_experiments, m_=m, noise_mean_=noise_mean,
                                      noise_std_=noise_std)
     if experiments is None:
@@ -215,10 +219,12 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
                 )
                 if save:
                     saved_dict['models'][scale].update({'corrected': prop_hat})
+    scaled_df = pd.concat(err_df_list)
     if orig_save:   # because we make the upper flag to be false
-        with open('models.pkl', 'wb') as f:
+        with open(os.path.join(save_dir, 'models.pkl'), 'wb') as f:
             pickle.dump(saved_dict, f)
-    return pd.concat(err_df_list)
+        scaled_df.to_csv(os.path.join(save_dir, "simulation_df.csv"))
+    return scaled_df
 
 
 def calc_balancing(x, t, e):
@@ -346,7 +352,7 @@ def isotonic_reg(pred, t):
 
 
 def plot_calibration(df, calib_metric, calib_metric_label, error='ATE_error', error_label='ATE Error',
-                     upper_y_bound=3.5, upper_x_bound=0.3, lower_x_bound=0., cm=None):
+                     upper_y_bound=3.5, upper_x_bound=0.3, lower_x_bound=0., cm=None, ax=None, return_ax=False):
     """
 
     Args:
@@ -362,25 +368,28 @@ def plot_calibration(df, calib_metric, calib_metric_label, error='ATE_error', er
     Returns:
 
     """
-    plt.figure(figsize=(10, 10))
+    if ax is None:
+        plt.figure(figsize=(10, 10))
     if cm is not None:
         hue_norm, hue_order, palette = get_palette_for_values(cm, df)
     else:
         hue_order = None
         palette = None
     ax = sns.scatterplot(x=calib_metric, y=error, data=df.sort_values('scale'), hue='type',
-                         hue_order=hue_order, palette=palette, legend=None, edgecolor='black')
-    plt.ylim(-0.01, upper_y_bound)
-    plt.xlim(lower_x_bound, upper_x_bound)
-    plt.xlabel(calib_metric_label, fontdict={'weight': 'bold', 'size': 17})
-    plt.ylabel(error_label, fontdict={'weight': 'bold', 'size': 17})
-    if cm is not None:
+                         hue_order=hue_order, palette=palette, legend=None, edgecolor='black', ax=ax)
+    ax.set_ylim(-0.01, upper_y_bound)
+    ax.set_xlim(lower_x_bound, upper_x_bound)
+    ax.set_xlabel(calib_metric_label, fontdict={'weight': 'bold', 'size': 17})
+    ax.set_ylabel(error_label, fontdict={'weight': 'bold', 'size': 17})
+    if cm is not None and not return_ax:
         sm = plt.cm.ScalarMappable(cmap=cm, norm=hue_norm)
         sm.set_array([])
 
         # Remove the legend and add a colorbar
         # ax.get_legend().remove()
         ax.figure.colorbar(sm)
+    if return_ax:
+        return ax
 
 
 def get_palette_for_values(cm, df):
@@ -403,33 +412,38 @@ def min_max_transform(arr):
     return (arr - arr.min()) / (arr.max() - arr.min())
 
 
-def plot_calibration_curve(res_dict, scale, hist_ratio=3, ax1=None):
+def fix_legend_names(key):
+    return key.replace("corrected", "Calibrated").replace("deformed", "Deformed")
+
+
+def plot_calibration_curve(res_dict, scale, hist_ratio=3, ax1=None, model_name=None,
+                           key_order=("Ground truth", "deformed", "corrected")):
     t = res_dict['t']
     prop = res_dict['prop']
-    models = res_dict['models'][scale]
-    models.update({'identity': prop})
+    models = copy(res_dict['models'][scale])
+    models.update({'Ground truth': prop})
+    rel_model_ordered = {fix_legend_names(key): models[key] for key in key_order}
     if ax1 is None:
         ax1 = plt.figure(figsize=(3, 1)).add_subplot(111)
-    # plt.figure(figsize=(10, 10))
-    # ax1 = plt.subplot2grid((3, 1), (0, 0), rowspan=2)
-    # ax2 = plt.subplot2grid((3, 1), (2, 0))
-    ax1.plot([0, 1], [0, 1], "k:", label="Perfectly calibrated")
+    ax1.plot([0, 1], [0, 1], "k:", label="Perfect calibration")
     ax2 = ax1.twinx()
-    for name, model in models.items():
+    for name, model in rel_model_ordered.items():
 
         fraction_of_positives, mean_predicted_value = \
             calibration_curve(t, model, n_bins=10)
-
+        alpha = 0.2 if name == 'Ground truth' else 0.5
         ax1.plot(mean_predicted_value, fraction_of_positives, "s-",
-                 label=f"{name}")
-        # ax2 = ax1.twinx()
+                 label=f"{name}", alpha=alpha)
         ax2.hist(model, range=(0, 1), bins=100, label=name,
-                 histtype="bar", lw=2, alpha=0.5)
+                 histtype="bar", lw=2, alpha=alpha)
 
-    ax1.set_ylabel("Fraction of positives", fontdict={'weight': 'bold', 'size': 16})
+    # ax1.set_ylabel("Fraction of positives", fontdict={'weight': 'bold', 'size': 16})
     ax1.set_ylim([-0.05, 1.05])
-    ax1.legend(loc="upper left", prop={'weight': 'bold', 'size': 16})
-    ax1.set_title(f'Calibration plots  (reliability curve) for scale: {scale}',  fontdict={'weight': 'bold', 'size': 16})
+    ax1.legend(loc="upper left", prop={'weight': 'bold', 'size': 12})
+    # label = model_name if model_name is not None else scale
+    text = f"{model_name}" if model_name is not None else rf"Calibration deformation scale $(\gamma)$: {scale}"
+    ax1.set_title(text,
+                  fontdict={'weight': 'bold', 'size': 16})
 
     top_val = ax2.get_ybound()[1]
     ax2.set_ylim([0, top_val * hist_ratio])
@@ -491,14 +505,23 @@ def get_arrows(df, calib_metric, y_metric='ATE_error'):
 
 
 # todo: fix arrow work
-def plot_arrow(values, ax):
+def plot_arrow(values, ax, color=None, alpha=0.4):
     # print(values[:2], tuple(np.array(values[2:]) + np.array(values[:2])))
+    # print(values)
+    if isinstance(color, dict):
+        rel_color = color[values.name]
+    else:
+        rel_color = color
+    if isinstance(values, pd.Series):
+        values = values.item()
     tail = values[:2]
     head = tuple(np.array(values[2:]) + np.array(values[:2]))
-    # plt.arrow(*values, length_includes_head=True, width=1e-20, alpha=0.4, head_width=0.009);
-    arrow = FancyArrowPatch(tail, head, lw=1, alpha=0.4, linestyle='solid',
-                            arrowstyle='simple,tail_width=0.01', shrinkB=3, mutation_scale=15)
+    # print(alpha)
+    arrow = FancyArrowPatch(tail, head, lw=1, alpha=alpha, linestyle='solid', edgecolor=rel_color,
+                            arrowstyle='simple,tail_width=0.01', shrinkB=3, mutation_scale=15,
+                            facecolor=(0, 0, 0, 0.05))
     ax.add_patch(arrow)
+    return 1
 
 
 def plot_overlap(t, prop):
@@ -515,3 +538,96 @@ def nested_cv_predict(model, variables, target, n_splits=10):
     final_score = cross_val_predict(model, variables, target, cv=cv_outer, n_jobs=-1, method='predict_proba')
 
     return final_score[:, 1]
+
+
+def plot_comp_plot(big_df, metric='mean', y_metric='ATE_error',
+                   x_label='Calibration error', y_label='Effect estimation error',
+                   plot_legend=False, force_names=None, color_edges=False):
+    fig = plt.figure(figsize=(10, 10))
+    for type_, marker in zip(['model', 'calibrated'], ['s', 'o']):
+        mask = big_df['calibration_type'].isna() if type_ == 'model' else ~big_df['calibration_type'].isna()
+        temp_df = big_df.loc[mask]
+        ax = sns.scatterplot(x=metric, y=y_metric, data=temp_df, hue='scale', marker=marker, legend=True)
+    temp_df = big_df
+
+    plt.xlabel(x_label, fontdict={'weight': 'bold', 'size': 17})
+    plt.ylabel(y_label, fontdict={'weight': 'bold', 'size': 17})
+
+    arrows = get_arrows(temp_df, calib_metric=metric, y_metric=y_metric)
+    names = big_df['scale'].unique() if force_names is None else force_names
+    colors = ax.get_children()[0]._facecolors[:len(names)]
+    if color_edges:
+        orig_names = [obj._label for obj in ax.get_children()[1:len(names) + 1]]
+        colors_mapping = {name: color for name, color in zip(orig_names, colors)}
+        arrows.to_frame("arrows").apply(plot_arrow, ax=ax, color=colors_mapping, alpha=0.3, axis=1);
+    else:
+        arrows.apply(plot_arrow, ax=ax);
+
+    if plot_legend:
+        # names = big_df['scale'].unique() if force_names is None else force_names
+        # colors = ax.get_children()[0]._facecolors[:len(names)]
+        legend_elements = [Patch(facecolor=fc, edgecolor='w',
+                                 label=name.replace("_model", "").replace("_cv", "").capitalize())
+                           for fc, name in zip(colors, names)]
+
+        legend_elements.extend([
+            Line2D([0], [0], marker='s', color='w', markeredgecolor='black', lw=4, alpha=1, label='Uncalibrated',
+                   markerfacecolor='w', markersize=9),
+            Line2D([0], [0], marker='o', color='w', markeredgecolor='black', lw=4, alpha=1, label='Calibrated',
+                   markerfacecolor='w', markersize=9),
+        ]
+        )
+        plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 10})
+    return ax
+
+
+def plot_comp_simulation_plot(big_df, metric='mean', y_metric='ATE_error',
+                              x_label='Calibration error', y_label='Effect estimation error', cm=None,
+                              color_edges=False):
+    fig = plt.figure(figsize=(10, 10))
+    if cm is not None:
+        hue_norm, _, palette = get_palette_for_values(cm, big_df)
+        hue_order = big_df['scale'].sort_values().unique()
+        palette = ListedColormap(palette, name='temp')
+    else:
+        hue_order = None
+        palette = None
+    for type_, marker in zip(['model', 'calibrated'], ['s', 'o']):
+        mask = big_df['calibration_type'].isna() if type_ == 'model' else ~big_df['calibration_type'].isna()
+        temp_df = big_df.loc[mask]
+        legend = 'full' if type_ == 'model' else False
+        ax = sns.scatterplot(x=metric, y=y_metric, data=temp_df.sort_values('scale'),
+                             hue='scale', marker=marker, legend=legend, s=40,
+                             hue_order=hue_order, palette=palette, edgecolor='black')
+    temp_df = big_df
+    plt.xlabel(x_label, fontdict={'weight': 'bold', 'size': 17})
+    plt.ylabel(y_label, fontdict={'weight': 'bold', 'size': 17})
+
+    arrows = get_arrows(temp_df, calib_metric=metric, y_metric=y_metric)
+
+    if color_edges:
+        colors_mapping = {float(obj._label): obj._facecolors.flatten()
+                          for obj in ax.get_children()[1:big_df['scale'].nunique() + 1]}
+        arrows.to_frame("arrows").apply(plot_arrow, ax=ax, color=colors_mapping, alpha=0.3, axis=1);
+    else:
+        arrows.apply(plot_arrow, ax=ax);
+    # arrows.apply(plot_arrow, ax=ax);
+    legend_elements = [
+                   Line2D([0], [0], marker='s', color='w', markeredgecolor='black',
+                          lw=4, alpha=1, label='Uncalibrated',
+                          markerfacecolor='w', markersize=9),
+                   Line2D([0], [0], marker='o', color='w', markeredgecolor='black',
+                          lw=4, alpha=1, label='Calibrated',
+                          markerfacecolor='w', markersize=9),
+                  ]
+    plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 10})#, title='Deformation', )
+    if cm is not None:
+        sm = plt.cm.ScalarMappable(cmap=cm, norm=hue_norm)
+        sm.set_array([])
+
+        # Remove the legend and add a colorbar
+        # ax.get_legend().remove()
+        clb = ax.figure.colorbar(sm)
+        clb.ax.set_ylabel("Calibration Deformation Scale", fontdict={'weight': 'bold',
+                                                                     'size': 17}, labelpad=14)
+    return ax
