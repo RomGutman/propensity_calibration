@@ -7,22 +7,4 @@
 #/pyproject.toml
 #/poetry.lock
 /prop_simulation - Jupyter Notebook_files/
-/prop_simulation - Jupyter Notebook.html
-/figs/
-
-# Not needed
-/acic42_1_sig.pkl
-/acic42_2_sig.pkl
-/acic42_3_sig.pkl
-/acic42_4_sig.pkl
-/acic42_5_sig.pkl
-/calib_df_before_smd.csv
-/final_42_df.csv
-/models.pkl
-/models_copy.pkl
-/nested_acis_42_sig.csv
-/nested_sig_with_lr.csv
-/new_simulation.csv
-/simulation_balancing_calibration.jpg
-/temp_df_42_nested_sig.csv
-/test_df_42_nested_sig.csv
+/deprecated/
