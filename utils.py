@@ -24,7 +24,8 @@ from causallib.datasets import load_nhefs
 from causallib.evaluation.weight_evaluator import calculate_covariate_balance
 
 
-def get_variables(mean_, std_, n_, m_=1, noise_mean_=1, noise_std_=0):
+def get_variables(mean_, std_, n_, m_=1, treat_noise_mean_=0, treat_noise_std_=1,
+                  outcome_noise_mean_=0, outcome_noise_std_=1, p_x='normal'):
     """ Generates normal distributed random variables for simulations.
 
     Draws M random variables from normal distribution, for N instances with given mean and std.
@@ -35,18 +36,26 @@ def get_variables(mean_, std_, n_, m_=1, noise_mean_=1, noise_std_=0):
         std_:
         n_:
         m_:
-        noise_mean_:
-        noise_std_:
+        treat_noise_mean_:
+        treat_noise_std_:
+        outcome_noise_mean_:
+        outcome_noise_std_:
 
     Returns:
 
     """
-    variables_ = np.random.normal(loc=mean_, scale=std_ ^ 2, size=[n_, m_])
-    noise_ = np.random.normal(loc=noise_mean_, scale=noise_std_ ^ 2, size=n_)
-    return variables_, noise_
+    if p_x == "normal":
+        x_ = np.random.normal(loc=mean_, scale=std_, size=[n_, m_])
+    elif p_x == "uniform":
+        x_ = np.random.uniform(low=-std_, high=std_, size=[n_, m_])
+    else:
+        raise ValueError("Distribution of X must be either uniform or normal")
+    treatment_noise_ = np.random.normal(loc=treat_noise_mean_, scale=treat_noise_std_, size=n_)
+    outcome_noise_ = np.random.normal(loc=outcome_noise_mean_, scale=outcome_noise_std_, size=n_)
+    return x_, treatment_noise_, outcome_noise_
 
 
-def expit_transform(coef_, variables_, exp_scale=1, func_scale=1):
+def expit_transform(coef_, variables_, exp_scale=1, noise=0):
     """
 
     Args:
@@ -56,8 +65,8 @@ def expit_transform(coef_, variables_, exp_scale=1, func_scale=1):
     Returns:
 
     """
-    exp = np.dot(coef_, np.transpose(variables_))
-    return expit(exp * exp_scale) * func_scale
+    exp = np.dot(coef_, np.transpose(variables_)) + noise
+    return expit(exp * exp_scale)
 
 
 def treatment_assigment(prop):
@@ -124,21 +133,26 @@ def is_scaled(label, label_prefix='scaled'):
     return label_prefix == label.split('_')[0]
 
 
-def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, num_of_experiments=1,
+def generate_simulation(m, mean, std, n, treatment_noise_mean, treatment_noise_std, outcome_noise_mean,
+                        outcome_noise_std, coef, y_coef, num_of_experiments=1,
                         phi_func=expit_transform, experiments=None, post_colab_func=None, save=False,
-                        nested_cv=False, save_dir='.'):
+                        nested_cv=False, save_dir='.', p_x='normal'):
     """
 
     Args:
+        nested_cv:
+        save_dir:
+        p_x:
         save: Whether to save the simulation run to present later
-        calibration_flag:
         phi_func:
         m:
         mean:
         std:
         n:
-        noise_mean:
-        noise_std:
+        treatment_noise_mean:
+        treatment_noise_std:
+        outcome_noise_mean:
+        outcome_noise_std:
         coef:
         y_coef:
         num_of_experiments:
@@ -150,8 +164,13 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
     if save:
         assert os.path.exists(save_dir), f"The directory {save_dir} doesn't exists."
         print(f"Saving to {save_dir}")
-    variables, noise = get_variables(mean_=mean, std_=std, n_=n * num_of_experiments, m_=m, noise_mean_=noise_mean,
-                                     noise_std_=noise_std)
+    variables, treatment_noise, outcome_noise = get_variables(mean_=mean, std_=std, n_=n * num_of_experiments, m_=m,
+                                                              treat_noise_mean_=treatment_noise_mean,
+                                                              treat_noise_std_=treatment_noise_std,
+                                                              outcome_noise_mean_=outcome_noise_mean,
+                                                              outcome_noise_std_=outcome_noise_std,
+                                                              p_x=p_x
+                                                              )
     if experiments is None:
         warnings.warn("No experiment were given, performing for identity only")
         experiments = {'Identity': None}
@@ -160,10 +179,11 @@ def generate_simulation(m, mean, std, n, noise_mean, noise_std, coef, y_coef, nu
     orig_save = save
     for i in tqdm(range(num_of_experiments)):
         rel_vars = variables[i * n: (i + 1) * n]
-        rel_noise = noise[i * n: (i + 1) * n]
-        prop = phi_func(coef, rel_vars)
+        t_rel_noise = treatment_noise[i * n: (i + 1) * n]
+        y_rel_noise = outcome_noise[i * n: (i + 1) * n]
+        prop = phi_func(coef, rel_vars, noise=t_rel_noise)
         t = treatment_assigment(prop)
-        potential_outcomes_lst = get_potential_outcomes(rel_vars, y_coef, rel_noise)
+        potential_outcomes_lst = get_potential_outcomes(rel_vars, y_coef, y_rel_noise)
         y = np.where(t == 1, potential_outcomes_lst[1], potential_outcomes_lst[0])
         if save and i == 0:
             saved_dict['t'] = t
@@ -413,7 +433,11 @@ def min_max_transform(arr):
 
 
 def fix_legend_names(key):
-    return key.replace("corrected", "Calibrated").replace("deformed", "Deformed")
+    return (key
+            .replace("corrected", "Calibrated")
+            .replace("deformed", "Uncalibrated")
+            .capitalize()
+            )
 
 
 def plot_calibration_curve(res_dict, scale, hist_ratio=3, ax1=None, model_name=None,
@@ -431,7 +455,7 @@ def plot_calibration_curve(res_dict, scale, hist_ratio=3, ax1=None, model_name=N
 
         fraction_of_positives, mean_predicted_value = \
             calibration_curve(t, model, n_bins=10)
-        alpha = 0.2 if name == 'Ground truth' else 0.5
+        alpha = 0.4 if name == 'Ground truth' else 0.5
         ax1.plot(mean_predicted_value, fraction_of_positives, "s-",
                  label=f"{name}", alpha=alpha)
         ax2.hist(model, range=(0, 1), bins=100, label=name,
@@ -439,7 +463,7 @@ def plot_calibration_curve(res_dict, scale, hist_ratio=3, ax1=None, model_name=N
 
     # ax1.set_ylabel("Fraction of positives", fontdict={'weight': 'bold', 'size': 16})
     ax1.set_ylim([-0.05, 1.05])
-    ax1.legend(loc="upper left", prop={'weight': 'bold', 'size': 12})
+    ax1.legend(loc="upper left", prop={'weight': 'bold', 'size': 14})
     # label = model_name if model_name is not None else scale
     text = f"{model_name}" if model_name is not None else rf"Calibration deformation scale $(\gamma)$: {scale}"
     ax1.set_title(text,
@@ -517,7 +541,7 @@ def plot_arrow(values, ax, color=None, alpha=0.4):
     tail = values[:2]
     head = tuple(np.array(values[2:]) + np.array(values[:2]))
     # print(alpha)
-    arrow = FancyArrowPatch(tail, head, lw=1, alpha=alpha, linestyle='solid', edgecolor=rel_color,
+    arrow = FancyArrowPatch(tail, head, lw=2, alpha=alpha, linestyle='solid', edgecolor=rel_color,
                             arrowstyle='simple,tail_width=0.01', shrinkB=3, mutation_scale=15,
                             facecolor=(0, 0, 0, 0.05))
     ax.add_patch(arrow)
@@ -547,7 +571,7 @@ def plot_comp_plot(big_df, metric='mean', y_metric='ATE_error',
     for type_, marker in zip(['model', 'calibrated'], ['s', 'o']):
         mask = big_df['calibration_type'].isna() if type_ == 'model' else ~big_df['calibration_type'].isna()
         temp_df = big_df.loc[mask]
-        ax = sns.scatterplot(x=metric, y=y_metric, data=temp_df, hue='scale', marker=marker, legend=True)
+        ax = sns.scatterplot(x=metric, y=y_metric, data=temp_df, hue='scale', marker=marker, legend=True, s=100)
     temp_df = big_df
 
     plt.xlabel(x_label, fontdict={'weight': 'bold', 'size': 17})
@@ -577,7 +601,8 @@ def plot_comp_plot(big_df, metric='mean', y_metric='ATE_error',
                    markerfacecolor='w', markersize=9),
         ]
         )
-        plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 10})
+        plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 13}, framealpha=0.2)
+        plt.tight_layout()
     return ax
 
 
@@ -615,12 +640,12 @@ def plot_comp_simulation_plot(big_df, metric='mean', y_metric='ATE_error',
     legend_elements = [
                    Line2D([0], [0], marker='s', color='w', markeredgecolor='black',
                           lw=4, alpha=1, label='Uncalibrated',
-                          markerfacecolor='w', markersize=9),
+                          markerfacecolor='w', markersize=14),
                    Line2D([0], [0], marker='o', color='w', markeredgecolor='black',
                           lw=4, alpha=1, label='Calibrated',
-                          markerfacecolor='w', markersize=9),
+                          markerfacecolor='w', markersize=14),
                   ]
-    plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 10})#, title='Deformation', )
+    plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 17})#, title='Deformation', )
     if cm is not None:
         sm = plt.cm.ScalarMappable(cmap=cm, norm=hue_norm)
         sm.set_array([])
@@ -629,5 +654,48 @@ def plot_comp_simulation_plot(big_df, metric='mean', y_metric='ATE_error',
         # ax.get_legend().remove()
         clb = ax.figure.colorbar(sm)
         clb.ax.set_ylabel("Calibration Deformation Scale", fontdict={'weight': 'bold',
-                                                                     'size': 17}, labelpad=14)
+                                                                    'size': 17}, labelpad=14)
     return ax
+
+
+def get_row_slope(row):
+    """
+    get slope of each experiment
+
+    Args:
+        row: series of experiment
+
+    Returns:
+
+    """
+    _, _, mx, my = row
+    return -my / mx
+
+
+def get_slopes(df, x_metric='mean', y_metric='ATE_error', describe=True):
+    arrows = get_arrows(df, calib_metric=x_metric, y_metric=y_metric)
+    slopes = arrows.apply(get_row_slope)
+    temp_df = slopes.to_frame().reset_index().groupby('scale')
+    if describe:
+        return temp_df.describe()
+    else:
+        return temp_df
+
+
+def make_run_dir(run_name):
+    """
+    make a dir for outputs experiments
+    Args:
+        run_name:
+
+    Returns:
+
+    """
+    cur_dir = os.path.abspath(os.getcwd())
+
+    outputs_dir = os.path.join(cur_dir, "outputs")
+    # run_name = 'sim_nest_new_run_noises_t05'
+
+    cur_run_dir = os.path.join(outputs_dir, run_name)
+    os.makedirs(cur_run_dir)
+    return cur_run_dir
