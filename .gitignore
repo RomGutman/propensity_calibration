@@ -4,7 +4,7 @@
 /.idea/
 /.DS_Store
 /.python-version
-#/pyproject.toml
-#/poetry.lock
 /prop_simulation - Jupyter Notebook_files/
 /deprecated/
+/outputs/
+models_test

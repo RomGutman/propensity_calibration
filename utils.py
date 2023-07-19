@@ -19,9 +19,11 @@ from matplotlib.lines import Line2D
 from sklearn.isotonic import IsotonicRegression
 from sklearn.base import ClassifierMixin, BaseEstimator
 from sklearn.model_selection import KFold, cross_val_predict, GridSearchCV
+from sklearn.linear_model import LinearRegression
 
 from causallib.datasets import load_nhefs
 from causallib.evaluation.weight_evaluator import calculate_covariate_balance
+from causallib.estimation.matching import  Matching
 
 
 def get_variables(mean_, std_, n_, m_=1, treat_noise_mean_=0, treat_noise_std_=1,
@@ -103,6 +105,48 @@ def calc_ipw(y, t, prop, eps=1E-7):
     y1 = np.mean(y * t / prop)
     y0 = np.mean(y * (1 - t) / (1 - prop))
     return y1 - y0
+
+def calc_sipw(y, t, prop, eps=1E-7):
+    prop = np.clip(prop, eps, 1 - eps)
+    y1 = np.sum(y * t / prop)
+    y1_weight = np.sum(t/prop)
+    y1 = y1 * y1_weight
+    y0 = np.sum(y * (1 - t) / (1 - prop))
+    y0_weight = np.sum((1-t)/(1-prop))
+    y0 = y0 * y0_weight
+    return y1 - y0
+
+
+def calc_matching(y, t, prop, eps=1E-7):
+    """
+    calculate propensity matching
+
+    Args:
+        y: outcome
+        t: treatment
+        prop: propensity
+        eps: epsilon value for cliping the values
+
+    Returns: ATE res
+
+    """
+    prop = np.clip(prop, eps, 1 - eps)
+    matching = Matching(with_replacement=False, n_neighbors=1, matching_mode='control_to_treatment', metric='euclidean')
+    X = pd.DataFrame(prop)
+    a = pd.Series(t, index=X.index)
+    y_s = pd.Series(y, index=X.index)
+    matching.fit(X=X, a=a, y=y_s)
+    match_df = matching.estimate_population_outcome(X=X, a=a, y=y_s)
+    return match_df[1] - match_df[0]
+
+
+def calc_stratification(y, t, prop, eps=1E-7, n_strata=20):
+    prop = np.clip(prop, eps, 1 - eps)
+    ps_qcut = pd.qcut(prop, q=n_strata)  # can use pd.cut instead
+    outcome_model = LinearRegression()
+    psa = pd.get_dummies(ps_qcut, drop_first=True).join(pd.Series(t, name='t'))
+    outcome_model.fit(psa, y)
+    return outcome_model.coef_[-1]  # The ATE is `a`’s coefficient
 
 
 def get_sacle_from_name(type_):
@@ -697,5 +741,7 @@ def make_run_dir(run_name):
     # run_name = 'sim_nest_new_run_noises_t05'
 
     cur_run_dir = os.path.join(outputs_dir, run_name)
-    os.makedirs(cur_run_dir)
+    if not os.path.exists(cur_run_dir):
+        os.makedirs(cur_run_dir)
     return cur_run_dir
+

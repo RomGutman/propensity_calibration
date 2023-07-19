@@ -3,6 +3,9 @@ import warnings
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
 from sklearn.model_selection import GridSearchCV, cross_val_score, KFold, cross_val_predict
+
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import FunctionTransformer
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -11,25 +14,6 @@ import seaborn as sns
 
 import utils
 warnings.filterwarnings('ignore')
-
-
-# def make_run_dir(run_name):
-#     """
-#
-#     Args:
-#         run_name:
-#
-#     Returns:
-#
-#     """
-#     cur_dir = os.path.abspath(os.getcwd())
-#
-#     outputs_dir = os.path.join(cur_dir, "outputs")
-#     # run_name = 'sim_nest_new_run_noises_t05'
-#
-#     cur_run_dir = os.path.join(outputs_dir, run_name)
-#     os.makedirs(cur_run_dir)
-#     return cur_run_dir
 
 
 def make_graphs_for_models(rel_models, force_names, cur_run_dir):
@@ -148,6 +132,13 @@ def make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir):
     plt.tight_layout()
 
     plt.savefig(os.path.join(cur_run_dir, 'simulation_deforming_calibration_curves.jpg'), dpi=400)
+
+def make_misspecified_model(func):
+
+    drop_col_transformer = FunctionTransformer(lambda x: x[:, 1:])
+
+    misspecified_func = make_pipeline(drop_col_transformer, func)
+    return misspecified_func
 
 
 if __name__ == '__main__':
