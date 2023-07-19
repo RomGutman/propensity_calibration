@@ -25,6 +25,8 @@ from causallib.datasets import load_nhefs
 from causallib.evaluation.weight_evaluator import calculate_covariate_balance
 from causallib.estimation.matching import  Matching
 
+import utils
+
 
 def get_variables(mean_, std_, n_, m_=1, treat_noise_mean_=0, treat_noise_std_=1,
                   outcome_noise_mean_=0, outcome_noise_std_=1, p_x='normal'):
@@ -106,6 +108,7 @@ def calc_ipw(y, t, prop, eps=1E-7):
     y0 = np.mean(y * (1 - t) / (1 - prop))
     return y1 - y0
 
+
 def calc_sipw(y, t, prop, eps=1E-7):
     prop = np.clip(prop, eps, 1 - eps)
     y1 = np.sum(y * t / prop)
@@ -177,26 +180,23 @@ def is_scaled(label, label_prefix='scaled'):
     return label_prefix == label.split('_')[0]
 
 
-def generate_simulation(m, mean, std, n, treatment_noise_mean, treatment_noise_std, outcome_noise_mean,
-                        outcome_noise_std, coef, y_coef, num_of_experiments=1,
-                        phi_func=expit_transform, experiments=None, post_colab_func=None, save=False,
-                        nested_cv=False, save_dir='.', p_x='normal'):
+def generate_simulation(n, variables, treatment_noise, outcome_noise, coef, y_coef, num_of_experiments=1,
+                        phi_func=expit_transform, experiments=None, post_colab_func=None, calc_effect=utils.calc_ipw,
+                        save=False,
+                        nested_cv=False, save_dir='.'):
     """
 
     Args:
+        calc_effect:
+        outcome_noise:
+        treatment_noise:
+        variables:
         nested_cv:
         save_dir:
-        p_x:
         save: Whether to save the simulation run to present later
         phi_func:
-        m:
-        mean:
-        std:
+        post_colab_func:
         n:
-        treatment_noise_mean:
-        treatment_noise_std:
-        outcome_noise_mean:
-        outcome_noise_std:
         coef:
         y_coef:
         num_of_experiments:
@@ -208,20 +208,13 @@ def generate_simulation(m, mean, std, n, treatment_noise_mean, treatment_noise_s
     if save:
         assert os.path.exists(save_dir), f"The directory {save_dir} doesn't exists."
         print(f"Saving to {save_dir}")
-    variables, treatment_noise, outcome_noise = get_variables(mean_=mean, std_=std, n_=n * num_of_experiments, m_=m,
-                                                              treat_noise_mean_=treatment_noise_mean,
-                                                              treat_noise_std_=treatment_noise_std,
-                                                              outcome_noise_mean_=outcome_noise_mean,
-                                                              outcome_noise_std_=outcome_noise_std,
-                                                              p_x=p_x
-                                                              )
     if experiments is None:
         warnings.warn("No experiment were given, performing for identity only")
         experiments = {'Identity': None}
     err_df_list = []
     saved_dict = {}
     orig_save = save
-    for i in tqdm(range(num_of_experiments)):
+    for i in tqdm(range(num_of_experiments), desc="Experiment", position=0):
         rel_vars = variables[i * n: (i + 1) * n]
         t_rel_noise = treatment_noise[i * n: (i + 1) * n]
         y_rel_noise = outcome_noise[i * n: (i + 1) * n]
@@ -235,7 +228,8 @@ def generate_simulation(m, mean, std, n, treatment_noise_mean, treatment_noise_s
             saved_dict['models'] = {}
         else:
             save = False
-        for expr, prop_func in experiments.items():
+        for expr, prop_func in (pbar := tqdm(experiments.items(), desc="Func", position=1, leave=False)):
+            pbar.set_description(f"Processing {expr}", refresh=True)
             flag = is_scaled(expr)
             if callable(prop_func):
                 prop_hat = prop_func(prop)
@@ -248,7 +242,7 @@ def generate_simulation(m, mean, std, n, treatment_noise_mean, treatment_noise_s
             else:
                 warnings.warn(f'for experiment {expr}, predicting identity')
                 prop_hat = prop
-            ate_hat = calc_ipw(y, t, prop_hat)
+            ate_hat = calc_effect(y, t, prop_hat)
             smd = calc_balancing(pd.DataFrame(rel_vars), pd.Series(t), prop_hat)
             scale = get_sacle_from_name(expr) if flag else f'{expr}_model'
             if save:
@@ -267,7 +261,7 @@ def generate_simulation(m, mean, std, n, treatment_noise_mean, treatment_noise_s
             if callable(post_colab_func):
                 new_label = f'{expr}_calibrated'
                 prop_hat = post_colab_func(prop_hat, t)
-                ate_hat = calc_ipw(y, t, prop_hat)
+                ate_hat = calc_effect(y, t, prop_hat)
                 smd = calc_balancing(pd.DataFrame(rel_vars), pd.Series(t), prop_hat)
                 err_df_list.append(
                     generate_calib_error_df(

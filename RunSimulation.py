@@ -1,9 +1,10 @@
 import os
 import warnings
+from functools import partial
+
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
 from sklearn.model_selection import GridSearchCV, cross_val_score, KFold, cross_val_predict
-
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer
 import numpy as np
@@ -11,8 +12,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-
 import utils
+
 warnings.filterwarnings('ignore')
 
 
@@ -133,16 +134,73 @@ def make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir):
 
     plt.savefig(os.path.join(cur_run_dir, 'simulation_deforming_calibration_curves.jpg'), dpi=400)
 
-def make_misspecified_model(func):
 
+def make_misspecified_model(func):
     drop_col_transformer = FunctionTransformer(lambda x: x[:, 1:])
 
     misspecified_func = make_pipeline(drop_col_transformer, func)
     return misspecified_func
 
 
+def run_experiment(num_of_experiments, variables, treatment_noise,
+                   outcome_noise, cur_run_dir, gb_tuned_parameters, rf_tuned_parameters, coef, y_coef,
+                   effect_func):
+    cv_inner = KFold(n_splits=10, shuffle=True, random_state=42)
+    scores = 'neg_brier_score'
+
+    model_experiments = {
+        'lr': LogisticRegression(random_state=42, n_jobs=-1, penalty='none'),
+        'lr_l1': LogisticRegressionCV(random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l1', max_iter=1e4),
+        'lr_l2': LogisticRegressionCV(random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l2', max_iter=1e4),
+        'GBT_cv': GridSearchCV(GradientBoostingClassifier(random_state=42), gb_tuned_parameters, scoring=scores,
+                               n_jobs=-1, cv=cv_inner),
+        'rf_cv': GridSearchCV(RandomForestClassifier(random_state=42), rf_tuned_parameters, scoring=scores, n_jobs=-1,
+                              cv=cv_inner),
+    }
+    scaling_range = [0.125, 0.25, 1 / 3, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
+    experiments = utils.scaled_for_experiments(scaling_range)
+    experiments.update(model_experiments)
+
+    # n_strata = [10, 20, 30]
+    calib_df = utils.generate_simulation(
+        n=n,
+        variables=variables, treatment_noise=treatment_noise, outcome_noise=outcome_noise,
+        coef=coef,
+        y_coef=y_coef,
+        num_of_experiments=num_of_experiments,
+        experiments=experiments,
+        post_colab_func=utils.sigmoid_calib,
+        save=True,
+        nested_cv=True,
+        save_dir=cur_run_dir,
+        calc_effect=effect_func
+    )
+    calib_df['ATE_error'] = (calib_df['ATE'] - y_coef[0]).pipe(lambda x: np.sqrt(x ** 2))
+    calib_df['ATE_error_l1'] = (calib_df['ATE'] - y_coef[0]).pipe(lambda x: np.abs(x))
+    calib_df.to_csv(os.path.join(cur_run_dir, "calib_df.csv"))
+    print(calib_df)
+    return calib_df
+
+
+def evaluate_results(calib_df, cur_run_dir):
+    model_rows = pd.to_numeric(calib_df['scale'], errors='coerce').isna()
+    force_names = ['Logistic Regression', 'Lasso Logistic Regression', 'Ridge Logistic Regression',
+                   "Gradient Boosting Trees", "Random Forest"]
+    make_graphs_for_models(rel_models=calib_df[model_rows].copy(), force_names=force_names, cur_run_dir=cur_run_dir)
+    cm = sns.diverging_palette(240, 50, s=80, l=70,
+                               n=calib_df['scale'].nunique(),
+                               as_cmap=True,
+                               center='light'
+                               )
+    make_graphs_for_scales(temp_scale_df=calib_df[~model_rows].copy(), cm=cm, cur_run_dir=cur_run_dir)
+    res_dict = get_res_dict(cur_run_dir)
+    make_calibration_graphs_models(res_dict, cur_run_dir)
+    scales = [0.125, 0.25, 0.5, 0.75, 1, 1.5, 1.75, 2, 3]
+    row_limit = 3
+    make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir)
+
+
 if __name__ == '__main__':
-    cur_run_dir = utils.make_run_dir("sim_only_n03_t05_t05")
 
     amount_of_vars = 4
     intercept = 0
@@ -169,70 +227,31 @@ if __name__ == '__main__':
                             'learning_rate': [0.01, 0.05, 0.1],
                             'n_estimators': [1, 3, 5, 10, 15]}]
 
-    scores = 'neg_brier_score'
+    num_of_experiments = 10
+    variables, treatment_noise, outcome_noise = utils.get_variables(mean_=mean, std_=std, n_=n * num_of_experiments,
+                                                                    m_=amount_of_vars,
+                                                                    treat_noise_mean_=t_noise_mean,
+                                                                    treat_noise_std_=t_noise_std,
+                                                                    outcome_noise_mean_=outcome_noise_mean,
+                                                                    outcome_noise_std_=outcome_noise_std,
+                                                                    p_x=p_x
+                                                                    )
 
-    cv_inner = KFold(n_splits=10, shuffle=True, random_state=42)
-
-    model_experiments = {
-        'lr': LogisticRegression(random_state=42, n_jobs=-1, penalty='none'),
-        'lr_l1': LogisticRegressionCV(random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l1', max_iter=1e4),
-        'lr_l2': LogisticRegressionCV(random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l2', max_iter=1e4),
-        'GBT_cv': GridSearchCV(GradientBoostingClassifier(random_state=42), gb_tuned_parameters, scoring=scores,
-                               n_jobs=-1, cv=cv_inner),
-        'rf_cv': GridSearchCV(RandomForestClassifier(random_state=42), rf_tuned_parameters, scoring=scores, n_jobs=-1,
-                              cv=cv_inner),
+    runs = {
+        "strata_10": partial(utils.calc_stratification, n_strata=10),
+        "strata_20": partial(utils.calc_stratification, n_strata=20),
+        "strata_30": partial(utils.calc_stratification, n_strata=30),
+        "matching": utils.calc_matching
     }
-    scaling_range = [0.125, 0.25, 1 / 3, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
+    for run_name, calc_func in runs.items():
+        print(f"{'#'*20}\nRunning: {run_name}\n{'#'*20}")
 
-    experiments = utils.scaled_for_experiments(scaling_range)
+        run_dir = utils.make_run_dir(f"sim_only_n03_t05_t05_{run_name}")
 
-    experiments.update(model_experiments)
+        df = run_experiment(num_of_experiments=num_of_experiments, variables=variables,
+                            treatment_noise=treatment_noise, outcome_noise=outcome_noise,
+                            cur_run_dir=run_dir, rf_tuned_parameters=rf_tuned_parameters,
+                            gb_tuned_parameters=gb_tuned_parameters, coef=coef, y_coef=y_coef,
+                            effect_func=calc_func)
 
-    num_of_experiments = 1000
-
-    calib_df = utils.generate_simulation(
-        m=amount_of_vars,
-        mean=mean, std=std, n=n,
-        treatment_noise_mean=t_noise_mean,
-        treatment_noise_std=t_noise_std,
-        outcome_noise_mean=outcome_noise_mean,
-        outcome_noise_std=outcome_noise_std,
-        coef=coef,
-        y_coef=y_coef,
-        num_of_experiments=num_of_experiments,
-        experiments=experiments,
-        post_colab_func=utils.sigmoid_calib,
-        save=True,
-        nested_cv=True,
-        save_dir=cur_run_dir,
-        p_x=p_x
-    )
-
-    calib_df['ATE_error'] = (calib_df['ATE'] - y_coef[0]).pipe(lambda x: np.sqrt(x ** 2))
-    calib_df['ATE_error_l1'] = (calib_df['ATE'] - y_coef[0]).pipe(lambda x: np.abs(x))
-
-    calib_df.to_csv(os.path.join(cur_run_dir, "calib_df.csv"))
-    print(calib_df)
-
-    model_rows = pd.to_numeric(calib_df['scale'], errors='coerce').isna()
-    # rel_models = calib_df[model_rows].copy()
-
-    force_names = ['Logistic Regression', 'Lasso Logistic Regression', 'Ridge Logistic Regression',
-                   "Gradient Boosting Trees", "Random Forest"]
-    make_graphs_for_models(rel_models=calib_df[model_rows].copy(), force_names=force_names, cur_run_dir=cur_run_dir)
-
-    cm = sns.diverging_palette(240, 50, s=80, l=70,
-                               n=calib_df['scale'].nunique(),
-                               as_cmap=True,
-                               center='light'
-                               )
-
-    make_graphs_for_scales(temp_scale_df=calib_df[~model_rows].copy(), cm=cm, cur_run_dir=cur_run_dir)
-
-    res_dict = get_res_dict(cur_run_dir)
-
-    make_calibration_graphs_models(res_dict, cur_run_dir)
-    scales = [0.125, 0.25, 0.5, 0.75, 1, 1.5, 1.75, 2, 3]
-    row_limit = 3
-    make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir)
-
+        evaluate_results(calib_df=df, cur_run_dir=run_dir)
