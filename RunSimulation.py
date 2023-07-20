@@ -135,27 +135,38 @@ def make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir):
     plt.savefig(os.path.join(cur_run_dir, 'simulation_deforming_calibration_curves.jpg'), dpi=400)
 
 
-def make_misspecified_model(func):
+def make_misspecified_model(func, **kwargs):
     drop_col_transformer = FunctionTransformer(lambda x: x[:, 1:])
 
-    misspecified_func = make_pipeline(drop_col_transformer, func)
+    misspecified_func = make_pipeline(drop_col_transformer, func(**kwargs))
     return misspecified_func
+
+
+def identity_function(func, **kwargs):
+    return func(**kwargs)
 
 
 def run_experiment(num_of_experiments, variables, treatment_noise,
                    outcome_noise, cur_run_dir, gb_tuned_parameters, rf_tuned_parameters, coef, y_coef,
-                   effect_func):
+                   effect_func, transformation_func: callable = identity_function):
     cv_inner = KFold(n_splits=10, shuffle=True, random_state=42)
     scores = 'neg_brier_score'
 
     model_experiments = {
-        'lr': LogisticRegression(random_state=42, n_jobs=-1, penalty='none'),
-        'lr_l1': LogisticRegressionCV(random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l1', max_iter=1e4),
-        'lr_l2': LogisticRegressionCV(random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l2', max_iter=1e4),
-        'GBT_cv': GridSearchCV(GradientBoostingClassifier(random_state=42), gb_tuned_parameters, scoring=scores,
-                               n_jobs=-1, cv=cv_inner),
-        'rf_cv': GridSearchCV(RandomForestClassifier(random_state=42), rf_tuned_parameters, scoring=scores, n_jobs=-1,
-                              cv=cv_inner),
+        'lr': transformation_func(func=LogisticRegression,
+                                  random_state=42, n_jobs=-1, penalty='none'),
+        'lr_l1': transformation_func(func=LogisticRegressionCV,
+                                     random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l1', max_iter=1e4),
+        'lr_l2': transformation_func(func=LogisticRegressionCV,
+                                     random_state=42, n_jobs=-1, cv=10, solver='saga', penalty='l2', max_iter=1e4),
+        'GBT_cv': transformation_func(func=GridSearchCV,
+                                      estimator=GradientBoostingClassifier(random_state=42),
+                                      param_grid=gb_tuned_parameters, scoring=scores,
+                                      n_jobs=-1, cv=cv_inner),
+        'rf_cv': transformation_func(GridSearchCV,
+                                     estimator=RandomForestClassifier(random_state=42),
+                                     param_grid=rf_tuned_parameters, scoring=scores, n_jobs=-1,
+                                     cv=cv_inner),
     }
     scaling_range = [0.125, 0.25, 1 / 3, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3]
     experiments = utils.scaled_for_experiments(scaling_range)
@@ -221,7 +232,7 @@ if __name__ == '__main__':
     outcome_noise_std = .5
 
     rf_tuned_parameters = [{'max_depth': [1, 2, 3],
-                            'n_estimators': [1, 5, 10, 100, 200, 400, 1000]}]
+                            'n_estimators': [1, 5, 10, 100, 200]}]
 
     gb_tuned_parameters = [{'max_depth': [1, 2, 3, 4],
                             'learning_rate': [0.01, 0.05, 0.1],
@@ -237,11 +248,14 @@ if __name__ == '__main__':
                                                                     p_x=p_x
                                                                     )
 
+    # runs = {
+    #     "strata_10": partial(utils.calc_stratification, n_strata=10),
+    #     "strata_20": partial(utils.calc_stratification, n_strata=20),
+    #     "strata_30": partial(utils.calc_stratification, n_strata=30),
+    #     "matching": utils.calc_matching
+    # }
     runs = {
-        "strata_10": partial(utils.calc_stratification, n_strata=10),
-        "strata_20": partial(utils.calc_stratification, n_strata=20),
-        "strata_30": partial(utils.calc_stratification, n_strata=30),
-        "matching": utils.calc_matching
+        "try_misspec_ipw": utils.calc_ipw
     }
     for run_name, calc_func in runs.items():
         print(f"{'#'*20}\nRunning: {run_name}\n{'#'*20}")
@@ -252,6 +266,6 @@ if __name__ == '__main__':
                             treatment_noise=treatment_noise, outcome_noise=outcome_noise,
                             cur_run_dir=run_dir, rf_tuned_parameters=rf_tuned_parameters,
                             gb_tuned_parameters=gb_tuned_parameters, coef=coef, y_coef=y_coef,
-                            effect_func=calc_func)
+                            effect_func=calc_func, transformation_func=make_misspecified_model)
 
         evaluate_results(calib_df=df, cur_run_dir=run_dir)
