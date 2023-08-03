@@ -244,13 +244,13 @@ if __name__ == '__main__':
     outcome_noise_std = .5
 
     rf_tuned_parameters = [{'max_depth': [1, 2, 3],
-                            'n_estimators': [1, 5, 10]}]
+                            'n_estimators': [1, 5, 10, 100, 200]}]
 
     gb_tuned_parameters = [{'max_depth': [1, 2, 3, 4],
                             'learning_rate': [0.01, 0.05, 0.1],
                             'n_estimators': [1, 3, 5, 10, 15]}]
 
-    num_of_experiments = 1
+    num_of_experiments = 10
     variables, treatment_noise, outcome_noise = utils.get_variables(mean_=mean, std_=std, n_=n * num_of_experiments,
                                                                     m_=amount_of_vars,
                                                                     treat_noise_mean_=t_noise_mean,
@@ -274,6 +274,9 @@ if __name__ == '__main__':
                                                                misspec_func=partial(add_additive_noise, loc=2,
                                                                                     scale=1))),
         "strata_nq_10": partial(utils.calc_stratification, n_strata=10, quantile_based=False),
+        "strata_nq_20": partial(utils.calc_stratification, n_strata=20, quantile_based=False),
+        "strata_nq_30": partial(utils.calc_stratification, n_strata=30, quantile_based=False),
+
     }
     for run_name, calc_func in runs.items():
         print(f"{'#'*20}\nRunning: {run_name}\n{'#'*20}")
