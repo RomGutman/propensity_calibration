@@ -143,9 +143,12 @@ def calc_matching(y, t, prop, eps=1E-7):
     return match_df[1] - match_df[0]
 
 
-def calc_stratification(y, t, prop, eps=1E-7, n_strata=20):
+def calc_stratification(y, t, prop, eps=1E-7, n_strata=20, quantile_based=True):
     prop = np.clip(prop, eps, 1 - eps)
-    ps_qcut = pd.qcut(prop, q=n_strata)  # can use pd.cut instead
+    if quantile_based:
+        ps_qcut = pd.qcut(prop, q=n_strata)  # can use pd.cut instead
+    else:
+        ps_qcut = pd.cut(prop, bins=n_strata)
     outcome_model = LinearRegression()
     psa = pd.get_dummies(ps_qcut, drop_first=True).join(pd.Series(t, name='t'))
     outcome_model.fit(psa, y)

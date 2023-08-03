@@ -1,6 +1,7 @@
 import os
 import warnings
 from functools import partial
+from copy import copy
 
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
@@ -60,7 +61,7 @@ def make_graphs_for_scales(temp_scale_df, cm, cur_run_dir):
 
     """
     temp_scale_df['scale'] = temp_scale_df['scale'].astype('float64')
-    # can be changed or generalized with more/less scales
+    # can be changed or generalized with more/fewer scales
     utils.plot_comp_simulation_plot(temp_scale_df.query('scale in [0.25, 0.5, 0.75, 1, 1.5, 1.75, 2]'),
                                     cm=cm, color_edges=True)
     plt.tight_layout()
@@ -137,6 +138,17 @@ def make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir):
 
 def make_misspecified_model(func, **kwargs):
     drop_col_transformer = FunctionTransformer(lambda x: x[:, 1:])
+
+    misspecified_func = make_pipeline(drop_col_transformer, func(**kwargs))
+    return misspecified_func
+
+def add_additive_noise(x, loc=0, scale=1):
+    x_ = copy(x)
+    x_[:, 0] += np.random.normal(loc=loc, scale=scale, size=x.shape[0])
+    return x_
+
+def make_misspecified_additive_model(func, misspec_func=add_additive_noise, **kwargs):
+    drop_col_transformer = FunctionTransformer(lambda x: misspec_func(x))
 
     misspecified_func = make_pipeline(drop_col_transformer, func(**kwargs))
     return misspecified_func
@@ -232,13 +244,13 @@ if __name__ == '__main__':
     outcome_noise_std = .5
 
     rf_tuned_parameters = [{'max_depth': [1, 2, 3],
-                            'n_estimators': [1, 5, 10, 100, 200]}]
+                            'n_estimators': [1, 5, 10]}]
 
     gb_tuned_parameters = [{'max_depth': [1, 2, 3, 4],
                             'learning_rate': [0.01, 0.05, 0.1],
                             'n_estimators': [1, 3, 5, 10, 15]}]
 
-    num_of_experiments = 10
+    num_of_experiments = 1
     variables, treatment_noise, outcome_noise = utils.get_variables(mean_=mean, std_=std, n_=n * num_of_experiments,
                                                                     m_=amount_of_vars,
                                                                     treat_noise_mean_=t_noise_mean,
@@ -252,20 +264,30 @@ if __name__ == '__main__':
     #     "strata_10": partial(utils.calc_stratification, n_strata=10),
     #     "strata_20": partial(utils.calc_stratification, n_strata=20),
     #     "strata_30": partial(utils.calc_stratification, n_strata=30),
-    #     "matching": utils.calc_matching
+    #     "matching": utils.calc_matching,
+    #     "try_misspec_ipw": (utils.calc_ipw, make_misspecified_model)
     # }
     runs = {
-        "try_misspec_ipw": utils.calc_ipw
+        'try_additive_0_misspec_ipw': (utils.calc_ipw, partial(make_misspecified_additive_model,
+                                                             misspec_func=partial(add_additive_noise, loc=0, scale=1))),
+        'try_additive_2_misspec_ipw': (utils.calc_ipw, partial(make_misspecified_additive_model,
+                                                               misspec_func=partial(add_additive_noise, loc=2,
+                                                                                    scale=1))),
+        "strata_nq_10": partial(utils.calc_stratification, n_strata=10, quantile_based=False),
     }
     for run_name, calc_func in runs.items():
         print(f"{'#'*20}\nRunning: {run_name}\n{'#'*20}")
 
         run_dir = utils.make_run_dir(f"sim_only_n03_t05_t05_{run_name}")
-
+        if "misspec" in run_name:
+            trans_func = calc_func[1]
+            calc_func = calc_func[0]
+        else:
+            trans_func = identity_function
         df = run_experiment(num_of_experiments=num_of_experiments, variables=variables,
                             treatment_noise=treatment_noise, outcome_noise=outcome_noise,
                             cur_run_dir=run_dir, rf_tuned_parameters=rf_tuned_parameters,
                             gb_tuned_parameters=gb_tuned_parameters, coef=coef, y_coef=y_coef,
-                            effect_func=calc_func, transformation_func=make_misspecified_model)
+                            effect_func=calc_func, transformation_func=trans_func)
 
         evaluate_results(calib_df=df, cur_run_dir=run_dir)
