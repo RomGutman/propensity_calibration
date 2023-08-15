@@ -110,15 +110,15 @@ def make_calibration_graph_synthetic(res_dict, cur_run_dir):
 
     """
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    utils.plot_calibration_curve(res_dict, 'rf_cv_model', ax1=axes[0][0], model_name="Random Forst",
+    utils.plot_calibration_curve(res_dict, 'rf_cv_model', ax1=axes[0][0], model_name="Random Forest",
                                  key_order=("Ground truth", "uncalibrated", "calibrated"))
     utils.plot_calibration_curve(res_dict, 'GBT_cv_model', ax1=axes[0][1], model_name="Gradient Boosting Trees",
                                  key_order=("Ground truth", "uncalibrated", "calibrated"))
-    utils.plot_calibration_curve(res_dict, 'lr_model', ax1=axes[0][2], model_name="Logisitic Regression",
+    utils.plot_calibration_curve(res_dict, 'lr_model', ax1=axes[0][2], model_name="Logistic Regression",
                                  key_order=("Ground truth", "uncalibrated", "calibrated"))
-    utils.plot_calibration_curve(res_dict, 'lr_l1_model', ax1=axes[1][0], model_name="Lasso Logisitic Regression",
+    utils.plot_calibration_curve(res_dict, 'lr_l1_model', ax1=axes[1][0], model_name="Lasso Logistic Regression",
                                  key_order=("Ground truth", "uncalibrated", "calibrated"))
-    utils.plot_calibration_curve(res_dict, 'lr_l2_model', ax1=axes[1][1], model_name="Ridge Logisitic Regression",
+    utils.plot_calibration_curve(res_dict, 'lr_l2_model', ax1=axes[1][1], model_name="Ridge Logistic Regression",
                                  key_order=("Ground truth", "uncalibrated", "calibrated"))
     fig.supxlabel('Predicted probability', fontweight="bold", fontsize=30)
     fig.supylabel('Actual probability', fontweight="bold", fontsize=30, x=0.01)
