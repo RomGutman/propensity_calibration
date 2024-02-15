@@ -1,11 +1,13 @@
+import os
 import os.path
 import warnings
 import pickle
 from copy import copy
 
-
+import matplotlib.figure
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 from scipy.special import expit, logit
 from sklearn.metrics import brier_score_loss
 from statsmodels.nonparametric.smoothers_lowess import lowess
@@ -20,10 +22,11 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.base import ClassifierMixin, BaseEstimator
 from sklearn.model_selection import KFold, cross_val_predict, GridSearchCV
 from sklearn.linear_model import LinearRegression
+from matplotlib.figure import SubFigure
 
 from causallib.datasets import load_nhefs
 from causallib.evaluation.weight_evaluator import calculate_covariate_balance
-from causallib.estimation.matching import  Matching
+from causallib.estimation.matching import Matching
 
 import utils
 
@@ -607,12 +610,16 @@ def nested_cv_predict(model, variables, target, n_splits=10):
 
 def plot_comp_plot(big_df, metric='mean', y_metric='ATE_error',
                    x_label='Calibration error', y_label='Effect estimation error',
-                   plot_legend=False, force_names=None, color_edges=False):
-    fig = plt.figure(figsize=(10, 10))
+                   plot_legend=False, force_names=None, color_edges=False, fig=None):
+    if fig is None:
+        fig = plt.figure(figsize=(10, 10))
+    elif not isinstance(fig, (plt.Figure, SubFigure)):
+        raise TypeError(f"Expected a matplotlib.pyplot.Figure instance, got {type(fig).__name__}")
+    ax = fig.add_subplot(111)
     for type_, marker in zip(['model', 'calibrated'], ['s', 'o']):
         mask = big_df['calibration_type'].isna() if type_ == 'model' else ~big_df['calibration_type'].isna()
         temp_df = big_df.loc[mask]
-        ax = sns.scatterplot(x=metric, y=y_metric, data=temp_df, hue='scale', marker=marker, legend=True, s=100)
+        sns.scatterplot(x=metric, y=y_metric, data=temp_df, hue='scale', marker=marker, legend=True, s=100, ax=ax)
     temp_df = big_df
 
     plt.xlabel(x_label, fontdict={'weight': 'bold', 'size': 17})
@@ -642,15 +649,19 @@ def plot_comp_plot(big_df, metric='mean', y_metric='ATE_error',
                    markerfacecolor='w', markersize=9),
         ]
         )
-        plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 13}, framealpha=0.2)
-        plt.tight_layout()
+        plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 13}, framealpha=0.2, loc='upper right')
+        # plt.tight_layout()
     return ax
 
 
 def plot_comp_simulation_plot(big_df, metric='mean', y_metric='ATE_error',
                               x_label='Calibration error', y_label='Effect estimation error', cm=None,
-                              color_edges=False):
-    fig = plt.figure(figsize=(10, 10))
+                              color_edges=False, fig=None):
+    if fig is None:
+        fig = plt.figure(figsize=(10, 10))
+    elif not isinstance(fig, (plt.Figure, SubFigure)):
+        raise TypeError(f"Expected a matplotlib.pyplot.Figure instance, got {type(fig).__name__}")
+    ax = fig.add_subplot(111)
     if cm is not None:
         hue_norm, _, palette = get_palette_for_values(cm, big_df)
         hue_order = big_df['scale'].sort_values().unique()
@@ -662,9 +673,9 @@ def plot_comp_simulation_plot(big_df, metric='mean', y_metric='ATE_error',
         mask = big_df['calibration_type'].isna() if type_ == 'model' else ~big_df['calibration_type'].isna()
         temp_df = big_df.loc[mask]
         legend = 'full' if type_ == 'model' else False
-        ax = sns.scatterplot(x=metric, y=y_metric, data=temp_df.sort_values('scale'),
+        sns.scatterplot(x=metric, y=y_metric, data=temp_df.sort_values('scale'),
                              hue='scale', marker=marker, legend=legend, s=40,
-                             hue_order=hue_order, palette=palette, edgecolor='black')
+                             hue_order=hue_order, palette=palette, edgecolor='black', ax=ax)
     temp_df = big_df
     plt.xlabel(x_label, fontdict={'weight': 'bold', 'size': 17})
     plt.ylabel(y_label, fontdict={'weight': 'bold', 'size': 17})
@@ -742,3 +753,70 @@ def make_run_dir(run_name):
         os.makedirs(cur_run_dir)
     return cur_run_dir
 
+
+def save_figure_in_format(figure, save_dir, filename, formats=('svg', 'png', 'pdf')):
+    """
+    Save matplotlib figure in multiple formats
+
+    Args:
+        figure:
+        save_dir:
+        filename:
+        formats:
+
+    Returns:
+
+    """
+    assert isinstance(figure, (matplotlib.figure.Figure, SubFigure)), "figure must be a matplotlib figure"
+    for fmt in formats:
+        temp_filename = f"{filename}.{fmt}"
+        dpi = 400 if fmt != 'png' else 'figure'
+        figure.savefig(os.path.join(save_dir, temp_filename), format=fmt, dpi=dpi)
+        plt.close(figure)
+        print(f"Saved figure to {os.path.join(save_dir, temp_filename)}")
+
+
+def get_res_dict(cur_run_dir, file_name="models.pkl"):
+    """
+    Get the results dictionary of the experiment from a pickle file.
+
+    Args:
+        cur_run_dir:
+        file_name:
+
+    Returns:
+
+    """
+    with open(os.path.join(cur_run_dir, file_name), 'rb') as f:
+        res_dict = pickle.load(f)
+    return res_dict
+
+
+def make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir):
+    """
+    Make a calibration graphs for the different scales, from the simulation results
+    Args:
+        res_dict:
+        scales:
+        row_limit:
+        cur_run_dir:
+
+    Returns:
+
+    """
+    fig, axes = plt.subplots(row_limit, row_limit, figsize=(20, 15))
+    i, j = 0, 0
+    for idx, scale in enumerate(scales):
+        utils.plot_calibration_curve(res_dict, scale, ax1=axes[i][j])
+        j += 1
+        if j >= row_limit:
+            i += 1
+            j = 0
+    fig.supxlabel('Predicted probability', fontweight="bold", fontsize=30)
+    fig.supylabel('Actual probability', fontweight="bold", fontsize=30, x=0.01)
+    fig.suptitle("Calibration curves of synthetic propensity scores", fontweight="bold", fontsize=25)
+
+    plt.tight_layout()
+
+    # plt.savefig(os.path.join(cur_run_dir, 'simulation_deforming_calibration_curves.jpg'), dpi=400)
+    save_figure_in_format(figure=fig, save_dir=cur_run_dir, filename='simulation_deforming_calibration_curves')

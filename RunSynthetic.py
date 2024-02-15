@@ -133,8 +133,7 @@ def make_calibration_graph_synthetic(res_dict, cur_run_dir):
     axes[1][2].remove()
     plt.tight_layout()
 
-    plt.savefig(os.path.join(cur_run_dir, 'calibration_acic.jpg'), dpi=400)
-
+    utils.save_figure_in_format(figure=fig, save_dir=cur_run_dir, filename='calibration_acic')
 
 def make_graphs_for_synthetic(df, force_names, cur_run_dir):
     """

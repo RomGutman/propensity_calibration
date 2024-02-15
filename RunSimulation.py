@@ -5,7 +5,7 @@ from copy import copy
 
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
-from sklearn.model_selection import GridSearchCV, cross_val_score, KFold, cross_val_predict
+from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer
 import numpy as np
@@ -78,13 +78,6 @@ def make_graphs_for_scales(temp_scale_df, cm, cur_run_dir):
     plt.savefig(os.path.join(cur_run_dir, 'simulation_balancing_calibration.jpg'), dpi=400)
 
 
-def get_res_dict(cur_run_dir):
-    import pickle
-    with open(os.path.join(cur_run_dir, "models.pkl"), 'rb') as f:
-        res_dict = pickle.load(f)
-    return res_dict
-
-
 def make_calibration_graphs_models(res_dict, cur_run_dir):
     """
     make calibration graphs for statistical models
@@ -116,24 +109,6 @@ def make_calibration_graphs_models(res_dict, cur_run_dir):
     plt.tight_layout()
 
     plt.savefig(os.path.join(cur_run_dir, 'simulation_models_calibration_curves.jpg'), dpi=400)
-
-
-def make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir):
-    fig, axes = plt.subplots(row_limit, row_limit, figsize=(20, 15))
-    i, j = 0, 0
-    for idx, scale in enumerate(scales):
-        utils.plot_calibration_curve(res_dict, scale, ax1=axes[i][j])
-        j += 1
-        if j >= row_limit:
-            i += 1
-            j = 0
-    fig.supxlabel('Predicted probability', fontweight="bold", fontsize=30)
-    fig.supylabel('Actual probability', fontweight="bold", fontsize=30, x=0.01)
-    fig.suptitle("Calibration curves of synthetic propensity scores", fontweight="bold", fontsize=25)
-
-    plt.tight_layout()
-
-    plt.savefig(os.path.join(cur_run_dir, 'simulation_deforming_calibration_curves.jpg'), dpi=400)
 
 
 def make_misspecified_model(func, **kwargs):
@@ -216,11 +191,11 @@ def evaluate_results(calib_df, cur_run_dir):
                                center='light'
                                )
     make_graphs_for_scales(temp_scale_df=calib_df[~model_rows].copy(), cm=cm, cur_run_dir=cur_run_dir)
-    res_dict = get_res_dict(cur_run_dir)
+    res_dict = utils.get_res_dict(cur_run_dir)
     make_calibration_graphs_models(res_dict, cur_run_dir)
     scales = [0.125, 0.25, 0.5, 0.75, 1, 1.5, 1.75, 2, 3]
     row_limit = 3
-    make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir)
+    utils.make_calibration_graphs_scales(res_dict, scales, row_limit, cur_run_dir)
 
 
 if __name__ == '__main__':
