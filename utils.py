@@ -610,7 +610,9 @@ def nested_cv_predict(model, variables, target, n_splits=10):
 
 def plot_comp_plot(big_df, metric='mean', y_metric='ATE_error',
                    x_label='Calibration error', y_label='Effect estimation error',
-                   plot_legend=False, force_names=None, color_edges=False, fig=None):
+                   plot_legend=False, force_names=None, color_edges=False, fig=None,
+                   legend_loc='upper right'
+                   ):
     if fig is None:
         fig = plt.figure(figsize=(10, 10))
     elif not isinstance(fig, (plt.Figure, SubFigure)):
@@ -649,7 +651,7 @@ def plot_comp_plot(big_df, metric='mean', y_metric='ATE_error',
                    markerfacecolor='w', markersize=9),
         ]
         )
-        plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 13}, framealpha=0.2, loc='upper right')
+        plt.legend(handles=legend_elements, prop={'weight': 'bold', 'size': 13}, framealpha=0.2, loc=legend_loc)
         # plt.tight_layout()
     return ax
 

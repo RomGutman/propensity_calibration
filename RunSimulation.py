@@ -108,7 +108,8 @@ def make_calibration_graphs_models(res_dict, cur_run_dir):
     axes[1][2].remove()
     plt.tight_layout()
 
-    plt.savefig(os.path.join(cur_run_dir, 'simulation_models_calibration_curves.jpg'), dpi=400)
+    utils.save_figure_in_format(figure=fig, save_dir=cur_run_dir, filename='simulation_models_calibration_curves')
+
 
 
 def make_misspecified_model(func, **kwargs):
